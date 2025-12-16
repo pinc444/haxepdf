@@ -78,7 +78,27 @@ class Filter {
 			if( n == "FlateDecode" ) {
 				props.remove("Filter");
 				#if neko
-				return neko.zip.Uncompress.run(b);
+				// Try zlib-wrapped first, then raw deflate if that fails
+				try {
+					return neko.zip.Uncompress.run(b);
+				} catch (e:Dynamic) {
+					// Try raw deflate (no zlib header) - allocate output buffer and decompress
+					try {
+						// Estimate uncompressed size (usually 2-10x compressed size)
+						var outSize = b.length * 10;
+						var out = haxe.io.Bytes.alloc(outSize);
+						var u = new neko.zip.Uncompress(-15); // -15 = raw deflate, no header
+						var result = u.execute(b, 0, out, 0);
+						u.close();
+						if (result.done) {
+							return out.sub(0, result.write);
+						}
+						return b; // Fallback to original
+					} catch (e2:Dynamic) {
+						// If both fail, return original bytes
+						return b;
+					}
+				}
 				#else
 				#if cpp
 				return cpp.zip.Uncompress.run(b);

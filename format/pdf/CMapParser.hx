@@ -162,26 +162,31 @@ class CMapParser {
             var chunk = hex.substr(i, chunkLen);
             var codePoint = Std.parseInt("0x" + chunk);
             
+            // Skip null or invalid code points
+            if (codePoint == null || codePoint == 0) {
+                i += chunkLen;
+                continue;
+            }
+            
             // Handle surrogate pairs for characters outside BMP
             if (codePoint >= 0xD800 && codePoint <= 0xDBFF && i + 4 < hex.length) {
                 // High surrogate - look for low surrogate
                 var nextChunk = hex.substr(i + 4, 4);
                 var lowSurrogate = Std.parseInt("0x" + nextChunk);
-                if (lowSurrogate >= 0xDC00 && lowSurrogate <= 0xDFFF) {
+                if (lowSurrogate != null && lowSurrogate >= 0xDC00 && lowSurrogate <= 0xDFFF) {
                     // Combine surrogates
                     codePoint = 0x10000 + ((codePoint - 0xD800) << 10) + (lowSurrogate - 0xDC00);
                     i += 4;
                 }
             }
             
-            // Convert code point to string
-            if (codePoint <= 0xFFFF) {
+            // Convert code point to string - use String.fromCharCode for Unicode support
+            // Neko's StringBuf.addChar only supports 0-255
+            if (codePoint <= 0xFF) {
                 result.addChar(codePoint);
             } else {
-                // For code points > 0xFFFF, need to encode as surrogate pair
-                var cp = codePoint - 0x10000;
-                result.addChar(0xD800 + (cp >> 10));
-                result.addChar(0xDC00 + (cp & 0x3FF));
+                // For code points > 255, use String.fromCharCode
+                result.add(String.fromCharCode(codePoint));
             }
             
             i += chunkLen;
