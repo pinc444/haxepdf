@@ -2,6 +2,7 @@ package format.pdf;
 
 import haxe.io.Bytes;
 import haxe.io.BytesInput;
+import format.pdf.CMapParser;
 
 /**
  * Parses embedded TrueType/OpenType font programs to extract glyph-to-character mappings.
@@ -431,12 +432,8 @@ class FontParser {
         for (gid in glyphIds) {
             var unicode = getUnicodeForGlyph(gid);
             if (unicode > 0) {
-                if (unicode < 256) {
-                    result.addChar(unicode);
-                } else {
-                    // For Unicode > 255, use escape or placeholder
-                    result.add(String.fromCharCode(unicode));
-                }
+                // Use proper UTF-8 encoding
+                result.add(CMapParser.codePointToUtf8(unicode));
             }
         }
         return result.toString();

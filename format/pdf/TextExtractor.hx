@@ -997,7 +997,7 @@ class TextExtractor {
                 fpCount++;
                 if (fpCount <= 10) {
                     var ucp = parser.glyphToUnicode.get(gid);
-                    sampleFP += " " + StringTools.hex(gid, 4) + "->" + String.fromCharCode(ucp);
+                    sampleFP += " " + StringTools.hex(gid, 4) + "->" + CMapParser.codePointToUtf8(ucp);
                 }
             }
             log("  FontParser sample:" + sampleFP);
@@ -1009,7 +1009,7 @@ class TextExtractor {
             for (glyphId in parser.glyphToUnicode.keys()) {
                 var unicode = parser.glyphToUnicode.get(glyphId);
                 if (unicode > 0 && !fontInfo.toUnicode.exists(glyphId)) {
-                    fontInfo.toUnicode.set(glyphId, String.fromCharCode(unicode));
+                    fontInfo.toUnicode.set(glyphId, CMapParser.codePointToUtf8(unicode));
                 }
             }
         } else {
@@ -1060,7 +1060,7 @@ class TextExtractor {
                         if (gid > 0) {
                             var unicode = fontInfo.fontParser.getUnicodeForGlyph(gid);
                             if (unicode > 0) {
-                                newToUnicode.set(cid, String.fromCharCode(unicode));
+                                newToUnicode.set(cid, CMapParser.codePointToUtf8(unicode));
                                 mappedCount++;
                             }
                         }
@@ -1444,19 +1444,19 @@ class FontInfo {
         if (fontParser != null) {
             var unicode = fontParser.getUnicodeForGlyph(charCode);
             if (unicode > 0) {
-                return String.fromCharCode(unicode);
+                return CMapParser.codePointToUtf8(unicode);
             }
         }
         
         // Then try encoding map
         if (encoding != null && encoding.exists(charCode)) {
             var unicode = encoding.get(charCode);
-            return String.fromCharCode(unicode);
+            return CMapParser.codePointToUtf8(unicode);
         }
         
         // Fall back to direct mapping for printable ASCII
         if (charCode >= 32 && charCode < 127) {
-            return String.fromCharCode(charCode);
+            return CMapParser.codePointToUtf8(charCode);
         }
         
         return "";

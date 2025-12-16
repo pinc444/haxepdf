@@ -20,6 +20,37 @@ import haxe.io.Bytes;
 class CMapParser {
     
     /**
+     * Convert a Unicode code point to a UTF-8 encoded string.
+     * This is necessary because Neko's String.fromCharCode doesn't handle Unicode > 255 properly.
+     */
+    public static function codePointToUtf8(codePoint:Int):String {
+        if (codePoint < 0x80) {
+            // ASCII - single byte
+            return String.fromCharCode(codePoint);
+        } else if (codePoint < 0x800) {
+            // 2-byte UTF-8
+            var b1 = 0xC0 | (codePoint >> 6);
+            var b2 = 0x80 | (codePoint & 0x3F);
+            return String.fromCharCode(b1) + String.fromCharCode(b2);
+        } else if (codePoint < 0x10000) {
+            // 3-byte UTF-8
+            var b1 = 0xE0 | (codePoint >> 12);
+            var b2 = 0x80 | ((codePoint >> 6) & 0x3F);
+            var b3 = 0x80 | (codePoint & 0x3F);
+            return String.fromCharCode(b1) + String.fromCharCode(b2) + String.fromCharCode(b3);
+        } else if (codePoint < 0x110000) {
+            // 4-byte UTF-8
+            var b1 = 0xF0 | (codePoint >> 18);
+            var b2 = 0x80 | ((codePoint >> 12) & 0x3F);
+            var b3 = 0x80 | ((codePoint >> 6) & 0x3F);
+            var b4 = 0x80 | (codePoint & 0x3F);
+            return String.fromCharCode(b1) + String.fromCharCode(b2) + String.fromCharCode(b3) + String.fromCharCode(b4);
+        }
+        // Invalid code point
+        return "";
+    }
+    
+    /**
      * Parse a CMap stream and return a mapping of character codes to Unicode strings
      */
     public static function parse(bytes:Bytes):Map<Int, String> {
@@ -103,7 +134,7 @@ class CMapParser {
             var offset = 0;
             for (code in loCode...(hiCode + 1)) {
                 var unicode = dstStart + offset;
-                mapping.set(code, String.fromCharCode(unicode));
+                mapping.set(code, codePointToUtf8(unicode));
                 offset++;
             }
             
@@ -180,14 +211,8 @@ class CMapParser {
                 }
             }
             
-            // Convert code point to string - use String.fromCharCode for Unicode support
-            // Neko's StringBuf.addChar only supports 0-255
-            if (codePoint <= 0xFF) {
-                result.addChar(codePoint);
-            } else {
-                // For code points > 255, use String.fromCharCode
-                result.add(String.fromCharCode(codePoint));
-            }
+            // Use proper UTF-8 encoding for all code points
+            result.add(codePointToUtf8(codePoint));
             
             i += chunkLen;
         }

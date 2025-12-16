@@ -6,6 +6,7 @@ package format.pdf;
 
 import haxe.io.Bytes;
 import format.pdf.TextExtractor.FontInfo;
+import format.pdf.CMapParser;
 
 /**
  * Parses PDF content streams to extract text.
@@ -389,7 +390,7 @@ class ContentStreamParser {
                 if (font.fontParser != null) {
                     var unicode = font.fontParser.getUnicodeForGlyph(code);
                     if (unicode > 0) {
-                        result.add(String.fromCharCode(unicode));
+                        result.add(CMapParser.codePointToUtf8(unicode));
                         i += 4;
                         continue;
                     }
