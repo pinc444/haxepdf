@@ -89,7 +89,12 @@ class ContentStreamParser {
                 var arrayResult = readArrayAndOperator(str, i);
                 if (arrayResult != null) {
                     for (item in arrayResult.items) {
-                        var text = decodeText(item.text, currentFont, stream, item.startPos);
+                        var text:String;
+                        if (item.isHex) {
+                            text = decodeHexText(item.text, currentFont);
+                        } else {
+                            text = decodeText(item.text, currentFont, stream, item.startPos);
+                        }
                         result.add(text);
                     }
                     i = arrayResult.endPos;
@@ -280,10 +285,10 @@ class ContentStreamParser {
         return {text: result.toString(), endPos: i};
     }
 
-    static function readArrayAndOperator(str:String, pos:Int):{items:Array<{text:String, startPos:Int}>, endPos:Int} {
+    static function readArrayAndOperator(str:String, pos:Int):{items:Array<{text:String, startPos:Int, isHex:Bool}>, endPos:Int} {
         if (pos >= str.length || str.charCodeAt(pos) != 91) return null;
         
-        var items = new Array<{text:String, startPos:Int}>();
+        var items = new Array<{text:String, startPos:Int, isHex:Bool}>();
         var i = pos + 1;
         
         while (i < str.length && str.charCodeAt(i) != 93) {
@@ -292,14 +297,14 @@ class ContentStreamParser {
             if (c == 40) { // String
                 var strResult = readStringAndOperator(str, i);
                 if (strResult != null) {
-                    items.push({text: strResult.text, startPos: strResult.startPos});
+                    items.push({text: strResult.text, startPos: strResult.startPos, isHex: false});
                     i = strResult.endPos;
                     continue;
                 }
             } else if (c == 60 && i + 1 < str.length && str.charCodeAt(i + 1) != 60) { // Hex string
                 var hexResult = readHexStringAndOperator(str, i);
                 if (hexResult != null) {
-                    items.push({text: hexResult.text, startPos: i + 1});
+                    items.push({text: hexResult.text, startPos: i + 1, isHex: true});
                     i = hexResult.endPos;
                     continue;
                 }
@@ -370,14 +375,8 @@ class ContentStreamParser {
         var i = 0;
         
         while (i < hexStr.length) {
-            // Read 2 or 4 hex digits
-            var chunkLen = 4;
-            if (i + chunkLen > hexStr.length) {
-                chunkLen = hexStr.length - i;
-            }
-            
             // First try 4 digits (2 bytes) for CID fonts
-            if (chunkLen >= 4 && font != null && font.toUnicode != null) {
+            if (i + 4 <= hexStr.length && font != null && font.toUnicode != null) {
                 var hex4 = hexStr.substr(i, 4);
                 var code = Std.parseInt("0x" + hex4);
                 if (code != null && font.toUnicode.exists(code)) {
@@ -385,10 +384,20 @@ class ContentStreamParser {
                     i += 4;
                     continue;
                 }
+                
+                // Also try font parser if available
+                if (font.fontParser != null) {
+                    var unicode = font.fontParser.getUnicodeForGlyph(code);
+                    if (unicode > 0) {
+                        result.add(String.fromCharCode(unicode));
+                        i += 4;
+                        continue;
+                    }
+                }
             }
             
             // Try 2 digits (1 byte)
-            if (chunkLen >= 2) {
+            if (i + 2 <= hexStr.length) {
                 var hex2 = hexStr.substr(i, 2);
                 var code = Std.parseInt("0x" + hex2);
                 if (code != null) {
@@ -396,8 +405,12 @@ class ContentStreamParser {
                         var decoded = font.decode(code);
                         if (decoded.length > 0) {
                             result.add(decoded);
+                            i += 2;
+                            continue;
                         }
-                    } else if (code >= 32 && code < 127) {
+                    }
+                    // Fallback: only output printable ASCII
+                    if (code >= 32 && code < 127) {
                         result.addChar(code);
                     }
                 }

@@ -8,6 +8,7 @@ import format.pdf.Data;
 import format.pdf.Filter;
 import format.pdf.CMapParser;
 import format.pdf.ContentStreamParser;
+import format.pdf.FontParser;
 import haxe.io.Bytes;
 
 /**
@@ -18,11 +19,25 @@ class TextExtractor {
     var objects:Map<Int, Data>;
     var fonts:Map<String, FontInfo>;
     var filter:Filter;
+    var divider:String; // Divider between text blocks
+    var debug:Bool;
 
-    public function new() {
+    public function new(divider:String = "\n") {
         objects = new Map();
         fonts = new Map();
         filter = new Filter();
+        this.divider = divider;
+        this.debug = false;
+    }
+    
+    public function setDebug(d:Bool):Void {
+        debug = d;
+    }
+    
+    function log(msg:String):Void {
+        if (debug) {
+            Sys.println("[DEBUG] " + msg);
+        }
     }
 
     /**
@@ -47,10 +62,13 @@ class TextExtractor {
         var result = new StringBuf();
         var pages = findPages();
         
+        log("Found " + pages.length + " pages");
+        
         var pageTextExtracted = false;
         if (pages.length > 0) {
             for (pageRef in pages) {
                 var pageText = extractPageText(pageRef);
+                log("Page " + pageRef + " text length: " + pageText.length);
                 if (pageText.length > 0) {
                     result.add(pageText);
                     result.add("\n\n");
@@ -83,7 +101,9 @@ class TextExtractor {
                                 var text = extractTextFromStreamWithFonts(bytes, fonts);
                                 if (text.length > 0) {
                                     result.add(text);
-                                    result.add("\n");
+                                    result.add(divider);
+                                    //this I see in the document end
+                                    //result.add("Only process if it looks like a content stream (has BT/ET text operators)");
                                 }
                             }
                         }
@@ -120,6 +140,13 @@ class TextExtractor {
     function extractTextFromStreamWithFonts(bytes:Bytes, allFonts:Map<String, FontInfo>):String {
         var result = new StringBuf();
         var content = bytes.toString();
+        
+        // Debug: Show sample of content stream
+        if (debug && content.length > 0) {
+            var sample = content.substr(0, 200);
+            sample = ~/[\r\n]+/g.replace(sample, " ");
+            log("Content stream sample: " + sample);
+        }
         
         // Current font ToUnicode map
         var currentToUnicode:Map<Int, String> = null;
@@ -240,7 +267,8 @@ class TextExtractor {
                 if (~/^\s*TJ/.match(afterArray)) {
                     // Add newline before if needed
                     if (needNewline && result.length > 0) {
-                        result.add("\n");
+                        result.add(divider);
+                        //result.add("if followed by TJ");
                         needNewline = false;
                     }
                     
@@ -267,7 +295,7 @@ class TextExtractor {
                 var afterHex = content.substr(i + 1, 10);
                 if (~/^\s*Tj/.match(afterHex)) {
                     if (needNewline && result.length > 0) {
-                        result.add("\n");
+                        result.add(divider);
                         needNewline = false;
                     }
                     var decoded = decodeHexStringWithToUnicode(hexContent, currentToUnicode);
@@ -299,7 +327,7 @@ class TextExtractor {
                 var afterStr = content.substr(i, 10);
                 if (~/^\s*Tj/.match(afterStr) || ~/^\s*'/.match(afterStr)) {
                     if (needNewline && result.length > 0) {
-                        result.add("\n");
+                        result.add(divider);
                         needNewline = false;
                     }
                     var textContent = content.substr(textStart, i - textStart - 1);
@@ -807,6 +835,7 @@ class TextExtractor {
             switch (baseFont) {
                 case DName(name):
                     fontInfo.name = name;
+                    log("Parsing font: " + name);
                 default:
             }
         }
@@ -818,15 +847,18 @@ class TextExtractor {
                 case DName(name):
                     fontInfo.encodingName = name;
                     fontInfo.encoding = getStandardEncoding(name);
+                    log("  Encoding: " + name);
                 case DDict(encProps):
                     // Custom encoding dictionary
                     fontInfo.encoding = parseEncodingDict(encProps);
+                    log("  Encoding: custom dict");
                 case DRef(refId, rev):
                     var encObj = resolveRef(refId);
                     if (encObj != null) {
                         switch (encObj) {
                             case DDict(encProps):
                                 fontInfo.encoding = parseEncodingDict(encProps);
+                                log("  Encoding: ref to dict");
                             default:
                         }
                     }
@@ -840,7 +872,27 @@ class TextExtractor {
             var cmapBytes = getCMapBytes(toUnicode);
             if (cmapBytes != null) {
                 fontInfo.toUnicode = CMapParser.parse(cmapBytes);
+                var count = 0;
+                var sampleMappings = "";
+                for (k in fontInfo.toUnicode.keys()) {
+                    count++;
+                    if (count <= 10) {
+                        sampleMappings += " " + StringTools.hex(k, 4) + "->" + fontInfo.toUnicode.get(k);
+                    }
+                }
+                log("  ToUnicode CMap: " + count + " mappings");
+                log("  Sample:" + sampleMappings);
             }
+        }
+        
+        // If no ToUnicode or incomplete, try to parse embedded font program
+        var toUnicodeCount = 0;
+        if (fontInfo.toUnicode != null) {
+            for (_ in fontInfo.toUnicode) toUnicodeCount++;
+        }
+        if (toUnicodeCount < 100) { // If ToUnicode has fewer than 100 mappings, also try embedded font
+            log("  ToUnicode incomplete (" + toUnicodeCount + " mappings), trying embedded font...");
+            parseEmbeddedFont(props, fontInfo);
         }
         
         // Store font info
@@ -848,6 +900,186 @@ class TextExtractor {
         
         // Also try to find font reference names in resource dictionaries
         storeFontByName(id, fontInfo);
+    }
+    
+    /**
+     * Try to find and parse an embedded font program to get glyph mappings
+     */
+    function parseEmbeddedFont(props:Map<String, Data>, fontInfo:FontInfo) {
+        // Get FontDescriptor
+        var fontDescriptor = props.get("FontDescriptor");
+        var descendantProps:Map<String, Data> = null;
+        
+        if (fontDescriptor == null) {
+            // Check for DescendantFonts (CIDFont case)
+            var descendants = props.get("DescendantFonts");
+            if (descendants != null) {
+                log("  Looking in DescendantFonts...");
+                descendants = resolveIfRef(descendants);
+                switch (descendants) {
+                    case DArray(arr):
+                        if (arr.length > 0) {
+                            var descendant = resolveIfRef(arr[0]);
+                            switch (descendant) {
+                                case DDict(dProps):
+                                    fontDescriptor = dProps.get("FontDescriptor");
+                                    descendantProps = dProps;
+                                    log("  Found FontDescriptor in descendant");
+                                    
+                                    // Check for CIDToGIDMap
+                                    var cidToGid = dProps.get("CIDToGIDMap");
+                                    if (cidToGid != null) {
+                                        log("  Found CIDToGIDMap!");
+                                        parseCIDToGIDMap(cidToGid, fontInfo);
+                                    }
+                                default:
+                            }
+                        }
+                    default:
+                }
+            }
+        }
+        
+        if (fontDescriptor == null) {
+            log("  No FontDescriptor found");
+            return;
+        }
+        
+        fontDescriptor = resolveIfRef(fontDescriptor);
+        
+        var fdProps:Map<String, Data> = null;
+        switch (fontDescriptor) {
+            case DDict(p):
+                fdProps = p;
+            default:
+                log("  FontDescriptor is not a dict");
+                return;
+        }
+        
+        // Look for FontFile, FontFile2 (TrueType), or FontFile3 (CFF/OpenType)
+        var fontFile = fdProps.get("FontFile2"); // TrueType
+        var fontType = "FontFile2";
+        if (fontFile == null) {
+            fontFile = fdProps.get("FontFile3"); // CFF/OpenType
+            fontType = "FontFile3";
+        }
+        if (fontFile == null) {
+            fontFile = fdProps.get("FontFile"); // Type 1
+            fontType = "FontFile";
+        }
+        
+        if (fontFile == null) {
+            log("  No embedded font file found");
+            return;
+        }
+        
+        log("  Found " + fontType);
+        
+        // Get the font program bytes
+        var fontBytes = getFontBytes(fontFile);
+        if (fontBytes == null || fontBytes.length < 12) {
+            log("  Font bytes null or too small");
+            return;
+        }
+        
+        log("  Font data: " + fontBytes.length + " bytes");
+        
+        // Parse the font using FontParser
+        var parser = new FontParser();
+        if (parser.parse(fontBytes)) {
+            fontInfo.fontParser = parser;
+            log("  FontParser: " + parser.getStats());
+            
+            // Show sample glyph mappings from FontParser
+            var sampleFP = "";
+            var fpCount = 0;
+            for (gid in parser.glyphToUnicode.keys()) {
+                fpCount++;
+                if (fpCount <= 10) {
+                    var ucp = parser.glyphToUnicode.get(gid);
+                    sampleFP += " " + StringTools.hex(gid, 4) + "->" + String.fromCharCode(ucp);
+                }
+            }
+            log("  FontParser sample:" + sampleFP);
+            
+            // Also convert glyph mappings to toUnicode format for compatibility
+            if (fontInfo.toUnicode == null) {
+                fontInfo.toUnicode = new Map<Int, String>();
+            }
+            for (glyphId in parser.glyphToUnicode.keys()) {
+                var unicode = parser.glyphToUnicode.get(glyphId);
+                if (unicode > 0 && !fontInfo.toUnicode.exists(glyphId)) {
+                    fontInfo.toUnicode.set(glyphId, String.fromCharCode(unicode));
+                }
+            }
+        } else {
+            log("  FontParser.parse() returned false");
+        }
+    }
+    
+    /**
+     * Get font program bytes from a FontFile reference
+     */
+    function getFontBytes(fontFile:Data):Bytes {
+        switch (fontFile) {
+            case DRef(id, rev):
+                var obj = resolveRef(id);
+                return getFontBytes(obj);
+            case DStream(bytes, props):
+                return bytes;
+            default:
+                return null;
+        }
+    }
+    
+    /**
+     * Parse CIDToGIDMap to get mapping from CID to glyph ID.
+     * This is crucial for subset fonts where CIDs don't map directly to glyph IDs.
+     */
+    function parseCIDToGIDMap(cidToGid:Data, fontInfo:FontInfo) {
+        switch (cidToGid) {
+            case DName("Identity"):
+                log("  CIDToGIDMap is Identity (CID = GID)");
+                // Identity mapping - CID equals GID, no conversion needed
+            case DRef(id, rev):
+                var obj = resolveRef(id);
+                parseCIDToGIDMap(obj, fontInfo);
+            case DStream(bytes, props):
+                log("  CIDToGIDMap stream: " + bytes.length + " bytes");
+                // The stream contains pairs of 2-byte values: for each CID (0, 1, 2...), 
+                // the corresponding GID is at position CID*2
+                // This allows us to convert CID -> GID -> Unicode
+                if (fontInfo.fontParser != null && bytes.length >= 2) {
+                    var newToUnicode = new Map<Int, String>();
+                    var mappedCount = 0;
+                    
+                    // For each CID, look up the GID and then the Unicode
+                    var numCIDs = Std.int(bytes.length / 2);
+                    for (cid in 0...numCIDs) {
+                        var gid = (bytes.get(cid * 2) << 8) | bytes.get(cid * 2 + 1);
+                        if (gid > 0) {
+                            var unicode = fontInfo.fontParser.getUnicodeForGlyph(gid);
+                            if (unicode > 0) {
+                                newToUnicode.set(cid, String.fromCharCode(unicode));
+                                mappedCount++;
+                            }
+                        }
+                    }
+                    
+                    log("  CIDToGIDMap resolved " + mappedCount + " CID->Unicode mappings");
+                    
+                    // Add these to the font's toUnicode map
+                    if (fontInfo.toUnicode == null) {
+                        fontInfo.toUnicode = new Map<Int, String>();
+                    }
+                    for (cid in newToUnicode.keys()) {
+                        if (!fontInfo.toUnicode.exists(cid)) {
+                            fontInfo.toUnicode.set(cid, newToUnicode.get(cid));
+                        }
+                    }
+                }
+            default:
+        }
     }
 
     function storeFontByName(id:Int, fontInfo:FontInfo) {
@@ -1189,12 +1421,14 @@ class FontInfo {
     public var encodingName:String;
     public var encoding:Map<Int, Int>;
     public var toUnicode:Map<Int, String>;
+    public var fontParser:FontParser; // Parsed embedded font program
 
     public function new() {
         name = "";
         encodingName = "";
         encoding = new Map();
         toUnicode = new Map();
+        fontParser = null;
     }
 
     /**
@@ -1204,6 +1438,14 @@ class FontInfo {
         // First try ToUnicode map (most accurate)
         if (toUnicode != null && toUnicode.exists(charCode)) {
             return toUnicode.get(charCode);
+        }
+        
+        // Then try embedded font parser (glyph ID to Unicode)
+        if (fontParser != null) {
+            var unicode = fontParser.getUnicodeForGlyph(charCode);
+            if (unicode > 0) {
+                return String.fromCharCode(unicode);
+            }
         }
         
         // Then try encoding map
