@@ -840,6 +840,19 @@ class TextExtractor {
             }
         }
         
+        // Check Subtype - CIDFontType0 and CIDFontType2 are CID fonts
+        var subtype = props.get("Subtype");
+        if (subtype != null) {
+            switch (subtype) {
+                case DName(name):
+                    if (name == "CIDFontType0" || name == "CIDFontType2" || name == "Type0") {
+                        fontInfo.isCIDFont = true;
+                        log("  Subtype: " + name + " (CID font)");
+                    }
+                default:
+            }
+        }
+        
         // Get encoding
         var encoding = props.get("Encoding");
         if (encoding != null) {
@@ -847,6 +860,10 @@ class TextExtractor {
                 case DName(name):
                     fontInfo.encodingName = name;
                     fontInfo.encoding = getStandardEncoding(name);
+                    // Identity-H and Identity-V are CID font encodings (2-byte character codes)
+                    if (name == "Identity-H" || name == "Identity-V") {
+                        fontInfo.isCIDFont = true;
+                    }
                     log("  Encoding: " + name);
                 case DDict(encProps):
                     // Custom encoding dictionary
@@ -895,6 +912,8 @@ class TextExtractor {
             parseEmbeddedFont(props, fontInfo);
         }
         
+        log("  isCIDFont: " + (fontInfo.isCIDFont ? "true" : "false"));
+        
         // Store font info
         fonts.set("F" + id, fontInfo);
         
@@ -915,6 +934,8 @@ class TextExtractor {
             var descendants = props.get("DescendantFonts");
             if (descendants != null) {
                 log("  Looking in DescendantFonts...");
+                // DescendantFonts means this is a Type0 (CID) font with 2-byte char codes
+                fontInfo.isCIDFont = true;
                 descendants = resolveIfRef(descendants);
                 switch (descendants) {
                     case DArray(arr):
@@ -986,6 +1007,7 @@ class TextExtractor {
         
         // Parse the font using FontParser
         var parser = new FontParser();
+        parser.debugMode = debug;
         if (parser.parse(fontBytes)) {
             fontInfo.fontParser = parser;
             log("  FontParser: " + parser.getStats());
@@ -1097,6 +1119,7 @@ class TextExtractor {
                                     switch (fontRef) {
                                         case DRef(refId, rev):
                                             if (refId == id) {
+                                                log("  Storing font '" + fontName + "' -> " + fontInfo.name);
                                                 fonts.set(fontName, fontInfo);
                                             }
                                         default:
@@ -1334,26 +1357,34 @@ class TextExtractor {
                         switch (fontRes) {
                             case DDict(fontDict):
                                 for (fontName in fontDict.keys()) {
+                                    log("  Font resource: " + fontName);
                                     var fontRef = fontDict.get(fontName);
                                     switch (fontRef) {
                                         case DRef(id, rev):
+                                            log("    -> ref " + id);
                                             // Look up the font info
                                             if (fonts.exists(fontName)) {
+                                                log("    Found in fonts by name");
                                                 pageFonts.set(fontName, fonts.get(fontName));
+                                            } else if (fonts.exists("F" + id)) {
+                                                // Try by object ID
+                                                log("    Found in fonts by F" + id);
+                                                pageFonts.set(fontName, fonts.get("F" + id));
                                             } else {
+                                                log("    Parsing on demand...");
                                                 // Parse font on demand
                                                 var fontObj = resolveRef(id);
                                                 if (fontObj != null) {
                                                     switch (fontObj) {
                                                         case DDict(fProps):
                                                             parseFont(id, fProps);
-                                                            if (fonts.exists(fontName)) {
-                                                                pageFonts.set(fontName, fonts.get(fontName));
+                                                            if (fonts.exists("F" + id)) {
+                                                                pageFonts.set(fontName, fonts.get("F" + id));
                                                             }
                                                         case DStream(bytes, fProps):
                                                             parseFont(id, fProps);
-                                                            if (fonts.exists(fontName)) {
-                                                                pageFonts.set(fontName, fonts.get(fontName));
+                                                            if (fonts.exists("F" + id)) {
+                                                                pageFonts.set(fontName, fonts.get("F" + id));
                                                             }
                                                         default:
                                                     }
@@ -1422,6 +1453,7 @@ class FontInfo {
     public var encoding:Map<Int, Int>;
     public var toUnicode:Map<Int, String>;
     public var fontParser:FontParser; // Parsed embedded font program
+    public var isCIDFont:Bool; // True for CID fonts (2-byte character codes)
 
     public function new() {
         name = "";
@@ -1429,6 +1461,7 @@ class FontInfo {
         encoding = new Map();
         toUnicode = new Map();
         fontParser = null;
+        isCIDFont = false;
     }
 
     /**

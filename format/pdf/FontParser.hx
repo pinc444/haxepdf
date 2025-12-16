@@ -24,8 +24,11 @@ class FontParser {
      * Parse a TrueType/OpenType font from raw bytes.
      * Returns true if parsing succeeded and glyph mappings were extracted.
      */
+    public var debugMode:Bool = false;
+    
     public function parse(data:Bytes):Bool {
         if (data == null || data.length < 12) {
+            if (debugMode) trace("FontParser: data null or too short");
             return false;
         }
         
@@ -51,15 +54,19 @@ class FontParser {
         }
         
         if (!isTrueType && !isOpenType) {
+            if (debugMode) trace("FontParser: not TrueType/OpenType, trying CFF. Version: " + StringTools.hex(version, 8));
             // Could be a CFF font (Type 1C)
             return parseCFF(data);
         }
+        
+        if (debugMode) trace("FontParser: detected " + (isTrueType ? "TrueType" : "OpenType"));
         
         input.bigEndian = true;
         input.position = 4;
         
         // Read offset table
         var numTables = input.readUInt16();
+        if (debugMode) trace("FontParser: numTables = " + numTables);
         var searchRange = input.readUInt16();
         var entrySelector = input.readUInt16();
         var rangeShift = input.readUInt16();
@@ -77,12 +84,16 @@ class FontParser {
             var length = input.readInt32();
             
             tables.set(tag, {offset: offset, length: length});
+            if (debugMode) trace("FontParser: table '" + tag + "' at offset " + offset + ", length " + length);
         }
         
         // Parse 'cmap' table for character mappings
         if (tables.exists("cmap")) {
             var cmapInfo = tables.get("cmap");
+            if (debugMode) trace("FontParser: parsing cmap table");
             parseCmapTable(data, cmapInfo.offset, cmapInfo.length);
+        } else {
+            if (debugMode) trace("FontParser: no cmap table found!");
         }
         
         // Parse 'name' table for font name
@@ -90,6 +101,10 @@ class FontParser {
             var nameInfo = tables.get("name");
             parseNameTable(data, nameInfo.offset, nameInfo.length);
         }
+        
+        var count = 0;
+        for (_ in glyphToUnicode) count++;
+        if (debugMode) trace("FontParser: extracted " + count + " glyph mappings");
         
         return glyphToUnicode.iterator().hasNext();
     }

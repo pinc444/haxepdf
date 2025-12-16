@@ -46,20 +46,28 @@ class ContentStreamParser {
             if (c == 47) { // '/'
                 var fontName = readName(str, i);
                 if (fontName != null) {
-                    i += fontName.length + 1;
+                    var afterName = i + fontName.length + 1;
                     
                     // Skip to Tf operator
-                    var tfPos = findOperator(str, i, "Tf");
-                    if (tfPos != -1 && tfPos - i < 50) {
-                        // Look up font
-                        if (pageFonts.exists(fontName)) {
-                            currentFont = pageFonts.get(fontName);
-                        } else if (allFonts.exists(fontName)) {
-                            currentFont = allFonts.get(fontName);
+                    var tfPos = findOperator(str, afterName, "Tf");
+                    if (tfPos != -1 && tfPos - afterName < 50) {
+                        // Verify there's a number (font size) between name and Tf
+                        var between = str.substring(afterName, tfPos);
+                        var hasNumber = ~/[0-9]+/.match(StringTools.trim(between));
+                        
+                        if (hasNumber) {
+                            // Look up font
+                            if (pageFonts.exists(fontName)) {
+                                currentFont = pageFonts.get(fontName);
+                            } else if (allFonts.exists(fontName)) {
+                                currentFont = allFonts.get(fontName);
+                            }
+                            i = tfPos + 2;
+                            continue;
                         }
-                        i = tfPos + 2;
-                        continue;
                     }
+                    i = afterName;
+                    continue;
                 }
             }
             
@@ -331,26 +339,37 @@ class ContentStreamParser {
 
     static function decodeText(text:String, font:FontInfo, stream:Bytes, streamOffset:Int):String {
         if (font == null) {
-            // No font info, return printable ASCII only
-            var result = new StringBuf();
-            for (i in 0...text.length) {
-                var c = text.charCodeAt(i);
-                if (c >= 32 && c < 127) {
-                    result.addChar(c);
-                } else if (c == 10 || c == 13) {
-                    result.add(" ");
-                }
-            }
-            return result.toString();
+            // No font info, can't decode properly - return empty
+            return "";
         }
         
         var result = new StringBuf();
         var i = 0;
         
+        // Check if this is a CID font (uses 2-byte character codes)
+        var isCIDFont = font.isCIDFont;
+        
         while (i < text.length) {
             var charCode = text.charCodeAt(i);
             
-            // Try 2-byte lookup for CID fonts
+            // For CID fonts, always consume 2 bytes per character
+            if (isCIDFont && i + 1 < text.length) {
+                var twoByteCode = (charCode << 8) | text.charCodeAt(i + 1);
+                if (font.toUnicode != null && font.toUnicode.exists(twoByteCode)) {
+                    result.add(font.toUnicode.get(twoByteCode));
+                } else if (font.fontParser != null) {
+                    var unicode = font.fontParser.getUnicodeForGlyph(twoByteCode);
+                    if (unicode > 0) {
+                        result.add(CMapParser.codePointToUtf8(unicode));
+                    }
+                    // If no mapping found, skip silently
+                }
+                // For CID fonts, always advance by 2 bytes
+                i += 2;
+                continue;
+            }
+            
+            // Try 2-byte lookup for non-CID fonts with ToUnicode
             if (font.toUnicode != null && i + 1 < text.length) {
                 var twoByteCode = (charCode << 8) | text.charCodeAt(i + 1);
                 if (font.toUnicode.exists(twoByteCode)) {
@@ -375,8 +394,31 @@ class ContentStreamParser {
         var result = new StringBuf();
         var i = 0;
         
+        // Determine if this is a CID font (uses 2-byte character codes)
+        var isCIDFont = font != null && font.isCIDFont;
+        
         while (i < hexStr.length) {
-            // First try 4 digits (2 bytes) for CID fonts
+            // For CID fonts, always use 4 hex digits (2 bytes)
+            if (isCIDFont && i + 4 <= hexStr.length) {
+                var hex4 = hexStr.substr(i, 4);
+                var code = Std.parseInt("0x" + hex4);
+                if (code != null) {
+                    if (font.toUnicode != null && font.toUnicode.exists(code)) {
+                        result.add(font.toUnicode.get(code));
+                    } else if (font.fontParser != null) {
+                        var unicode = font.fontParser.getUnicodeForGlyph(code);
+                        if (unicode > 0) {
+                            result.add(CMapParser.codePointToUtf8(unicode));
+                        }
+                        // If no mapping found, skip silently (unmapped glyph)
+                    }
+                    // For CID fonts, always advance by 4 hex chars
+                }
+                i += 4;
+                continue;
+            }
+            
+            // First try 4 digits (2 bytes) for non-CID fonts with ToUnicode
             if (i + 4 <= hexStr.length && font != null && font.toUnicode != null) {
                 var hex4 = hexStr.substr(i, 4);
                 var code = Std.parseInt("0x" + hex4);
@@ -397,7 +439,7 @@ class ContentStreamParser {
                 }
             }
             
-            // Try 2 digits (1 byte)
+            // Try 2 digits (1 byte) - only for non-CID fonts
             if (i + 2 <= hexStr.length) {
                 var hex2 = hexStr.substr(i, 2);
                 var code = Std.parseInt("0x" + hex2);
@@ -409,11 +451,11 @@ class ContentStreamParser {
                             i += 2;
                             continue;
                         }
+                        // If font exists but can't decode, skip (don't fall back to ASCII)
+                        i += 2;
+                        continue;
                     }
-                    // Fallback: only output printable ASCII
-                    if (code >= 32 && code < 127) {
-                        result.addChar(code);
-                    }
+                    // No font - skip, don't output raw ASCII garbage
                 }
                 i += 2;
             } else {
