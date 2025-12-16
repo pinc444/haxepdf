@@ -1,0 +1,6 @@
+--main Main
+--neko bin/main.n
+-cp src
+-cp .
+#-D no-traces
+#-lib format

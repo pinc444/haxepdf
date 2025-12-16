@@ -1,0 +1,4 @@
+--main PdfToText
+-cp src
+-cp .
+--neko bin/pdftotext.n
